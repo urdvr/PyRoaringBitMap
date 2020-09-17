@@ -8,7 +8,7 @@ import sys
 import subprocess
 import platform
 
-VERSION = '0.2.5'
+VERSION = '0.2.9'
 PKG_DIR = 'pyroaring'
 
 PLATFORM_WINDOWS = (platform.system() == 'Windows')
@@ -80,15 +80,18 @@ else:
 if PLATFORM_WINDOWS:
     compile_args = []
 else:
-    compile_args = ['-D__STDC_LIMIT_MACROS', '-D__STDC_CONSTANT_MACROS']
-    if not PLATFORM_MACOSX:
+    compile_args = ['-D__STDC_LIMIT_MACROS', '-D__STDC_CONSTANT_MACROS', '-D _GLIBCXX_ASSERTIONS']
+    if PLATFORM_MACOSX:
+        compile_args.append('-mmacosx-version-min=10.14')
+    else:
         compile_args.append('-std=c99')
     if 'DEBUG' in os.environ:
         compile_args.extend(['-O0', '-g'])
     else:
         compile_args.append('-O3')
     if 'ARCHI' in os.environ:
-        compile_args.extend(['-march=%s' % os.environ['ARCHI']])
+        if os.environ['ARCHI'] != "generic":
+            compile_args.extend(['-march=%s' % os.environ['ARCHI']])
     else:
         compile_args.append('-march=native')
 

@@ -74,6 +74,17 @@ For instance, to install ``pyroaring`` version ``0.2.1`` for Python ``3.6`` on L
 
    pip install --user https://github.com/Ezibenroc/PyRoaringBitMap/releases/download/0.2.1/pyroaring-0.2.1-cp36-cp36m-linux_x86_64.whl
 
+Installation from conda-forge
+-----------------------------
+
+Conda users can install the package from `conda-forge`:
+
+.. code:: bash
+
+   conda install -c conda-forge pyroaring
+
+(Supports Python 3.6 or higher; Mac/Linux/Windows)
+
 Manual compilation / installation
 ---------------------------------
 
@@ -159,7 +170,7 @@ Benchmark
 
 - A `Python wrapper <https://github.com/sunzhaoping/python-croaring>`__ of CRoaring called ``python-croaring``
 - A `Cython implementation <https://github.com/andreasvc/roaringbitmap>`__ of Roaring bitmaps called ``roaringbitmap``
-- A Python implemenntation of `ordered sets <https://github.com/grantjenks/sorted_containers>`__ called ``sortedcontainers``
+- A Python implementation of `ordered sets <https://github.com/grantjenks/sorted_containers>`__ called ``sortedcontainers``
 
 The script ``quick_bench.py`` measures the time of different set
 operations. It uses randomly generated sets of size 1e6 and density

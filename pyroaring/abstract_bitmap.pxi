@@ -52,11 +52,17 @@ cdef class AbstractBitMap:
                 buff = <array.array> values
                 self._c_bitmap = croaring.roaring_bitmap_of_ptr(size, &buff[0])
         else:
+            try:
+                size = len(values)
+            except TypeError:  # object has no length, creating a list
+                values = list(values)
+                size = len(values)
             self._c_bitmap = croaring.roaring_bitmap_create()
-            buff_vect = values
-            croaring.roaring_bitmap_add_many(self._c_bitmap, len(values), &buff_vect[0])
+            if size > 0:
+                buff_vect = values
+                croaring.roaring_bitmap_add_many(self._c_bitmap, size, &buff_vect[0])
         if not isinstance(values, AbstractBitMap):
-            self._c_bitmap.copy_on_write = copy_on_write
+            croaring.roaring_bitmap_set_copy_on_write(self._c_bitmap, copy_on_write)
             self._h_val = 0
         if optimize:
             self.run_optimize()
@@ -97,7 +103,7 @@ cdef class AbstractBitMap:
         >>> BitMap(copy_on_write=True).copy_on_write
         True
         """
-        return self._c_bitmap.copy_on_write
+        return croaring.roaring_bitmap_get_copy_on_write(self._c_bitmap)
 
     def run_optimize(self):
         return croaring.roaring_bitmap_run_optimize(self._c_bitmap)
@@ -110,7 +116,7 @@ cdef class AbstractBitMap:
             croaring.roaring_bitmap_free(self._c_bitmap)
 
     def __check_compatibility(self, AbstractBitMap other):
-        if self._c_bitmap.copy_on_write != other._c_bitmap.copy_on_write:
+        if self.copy_on_write != other.copy_on_write:
             raise ValueError('Cannot have interactions between bitmaps with and without copy_on_write.\n')
 
     def __contains__(self, uint32_t value):
@@ -195,6 +201,25 @@ cdef class AbstractBitMap:
             self._h_val = self.compute_hash()
         return self._h_val
 
+    def iter_equal_or_larger(self, uint32_t val):
+        """
+        Iterate over items in the bitmap equal or larger than a given value.
+
+        >>> bm = BitMap([1, 2, 4])
+        >>> list(bm.iter_equal_or_larger(2))
+        [2, 4]
+        """
+        cdef croaring.roaring_uint32_iterator_t *iterator = croaring.roaring_create_iterator(self._c_bitmap)
+        valid = croaring.roaring_move_uint32_iterator_equalorlarger(iterator, val)
+        if not valid:
+            return
+        try:
+            while iterator.has_value:
+                yield iterator.current_value
+                croaring.roaring_advance_uint32_iterator(iterator)
+        finally:
+            croaring.roaring_free_uint32_iterator(iterator)
+
     def __iter__(self):
         cdef croaring.roaring_uint32_iterator_t *iterator = croaring.roaring_create_iterator(self._c_bitmap)
         try:
@@ -208,8 +233,57 @@ cdef class AbstractBitMap:
         return str(self)
 
     def __str__(self):
-        values = ', '.join([str(n) for n in self])
-        return '%s([%s])' % (self.__class__.__name__, values)
+        skip_rows = len(self) > 500 #this is the cutoff number for the truncating to kick in.
+        table_max_width = 80  # this isn't the length of the entire output, it's only for the numeric part
+        num_lines_if_skipping = 5  # the number of lines to show in the beginning and the end when output is being truncated
+
+        head = self.__class__.__name__ + '(['
+        row_start_buffer = ' ' * len(head)
+        tail = '])'
+
+        try:
+            maxval = self.max()
+        except ValueError:
+            # empty bitmap
+            return head + tail
+
+        element_max_length = len(str(maxval))
+        column_width = element_max_length + 2
+
+        num_columns = table_max_width // column_width
+
+        num_rows = len(self) / float(num_columns)
+        if not num_rows.is_integer():
+            num_rows += 1
+        num_rows = int(num_rows)
+        rows = []
+        row_idx = 0
+        skipped = False
+        while row_idx < num_rows:
+            row_ints = self[row_idx * num_columns:(row_idx + 1) * num_columns]
+
+            line = []
+            for i in row_ints:
+                s = str(i)
+                if num_rows == 1:
+                    # no padding if all numbers fit on a single line
+                    line.append(s)
+                else:
+                    line.append(' ' * (element_max_length - len(s)) + s)
+
+            if row_idx == 0:
+                prefix = head
+            else:
+                prefix = row_start_buffer
+            rows.append(prefix + ', '.join(line) + ',')
+            row_idx += 1
+            if skip_rows and not skipped and row_idx >= num_lines_if_skipping:
+                rows.append((' ' * ((table_max_width + len(head)) // 2)) + '...')
+                skipped = True
+                row_idx = num_rows - num_lines_if_skipping
+
+        rows[-1] = rows[-1].rstrip(',')  # remove trailing comma from the last line
+        return '\n'.join(rows) + tail
 
     def flip(self, uint64_t start, uint64_t end):
         """
@@ -536,6 +610,25 @@ cdef class AbstractBitMap:
         """
         return croaring.roaring_bitmap_rank(self._c_bitmap, value)
 
+    def next_set_bit(self, uint32_t value):
+        """
+        Return the next set bit larger or equal to the given value.
+
+        >>> BitMap([1, 2, 4]).next_set_bit(1)
+        1
+
+        >>> BitMap([1, 2, 4]).next_set_bit(3)
+        4
+
+        >>> BitMap([1, 2, 4]).next_set_bit(5)
+        Traceback (most recent call last):
+        ValueError: No value larger or equal to specified value.
+        """
+        try:
+            return next(self.iter_equal_or_larger(value))
+        except StopIteration:
+            raise ValueError('No value larger or equal to specified value.')
+
     cdef int64_t _shift_index(self, int64_t index) except -1:
         cdef int64_t size = len(self)
         if index >= size or index < -size:
@@ -586,7 +679,7 @@ cdef class AbstractBitMap:
         cdef uint32_t  count, max_count=256
         cdef uint32_t *buff = <uint32_t*>malloc(max_count*4)
         cdef uint32_t i_loc=0, i_glob=start, i_buff=0
-        result.copy_on_write = self.copy_on_write
+        croaring.roaring_bitmap_set_copy_on_write(result, self.copy_on_write)
         first_elt = self._get_elt(start)
         valid = croaring.roaring_move_uint32_iterator_equalorlarger(iterator, first_elt)
         assert valid

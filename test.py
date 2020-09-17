@@ -7,7 +7,7 @@ import os
 import sys
 import pickle
 import re
-from hypothesis import given, settings, unlimited, Verbosity, errors
+from hypothesis import given, settings, unlimited, Verbosity, errors, HealthCheck
 import hypothesis.strategies as st
 import array
 import pyroaring
@@ -217,6 +217,14 @@ class BasicTest(Util):
         expected = array.array('I', sorted(values))
         self.assertEqual(result, expected)
 
+    @given(bitmap_cls, st.booleans(), st.integers(min_value=0, max_value=100))
+    def test_constructor_generator(self, cls, cow, size):
+        def generator(n):
+            for i in range(n):
+                yield i
+        bitmap = cls(generator(size), copy_on_write=cow)
+        self.assertEqual(bitmap, cls(range(size), copy_on_write=cow))
+
 
 class SelectRankTest(Util):
 
@@ -303,6 +311,23 @@ class SelectRankTest(Util):
         bitmap = cls()
         with self.assertRaises(ValueError):
             m = bitmap.max()
+
+    @given(bitmap_cls, hyp_collection, uint32, st.booleans())
+    def test_next_set_bit(self, cls, values, other_value, cow):
+        st.assume(len(values) > 0)
+        bitmap = cls(values, copy_on_write=cow)
+        try:
+            expected = next(i for i in values if i >= other_value)
+            self.assertEqual(bitmap.next_set_bit(other_value), expected)
+        except StopIteration:
+            with self.assertRaises(ValueError):
+                b = bitmap.next_set_bit(other_value)
+
+    @given(bitmap_cls)
+    def test_wrong_next_set_bit(self, cls):
+        bitmap = cls()
+        with self.assertRaises(ValueError):
+            b = bitmap.next_set_bit(0)
 
 
 class BinaryOperationsTest(Util):
@@ -770,6 +795,16 @@ class IncompatibleInteraction(Util):
 
 
 class BitMapTest(unittest.TestCase):
+    @given(hyp_collection, uint32)
+    def test_iter_equal_or_larger(self, values, other_value):
+        bm = BitMap(values)
+        bm_iter = bm.iter_equal_or_larger(other_value)
+        expected = [i for i in values if i >= other_value]
+        expected.sort()
+
+        observed = list(bm_iter)
+        self.assertEqual(expected, observed)
+
     def test_unashability(self):
         bm = BitMap()
         with self.assertRaises(TypeError):
@@ -1364,6 +1399,40 @@ class PythonSetEquivalentTest(unittest.TestCase):
         b1.update(b2, b3)
 
         self.assertEqual(s1, set(b1))
+
+small_list_of_uin32 = st.lists(min_size=0, max_size=400, elements=uint32)
+large_list_of_uin32 = st.lists(min_size=600, max_size=1000, elements=uint32, unique=True)
+class StringTest(unittest.TestCase):
+
+    @given(bitmap_cls, small_list_of_uin32)
+    def test_small_list(self, cls, collection):
+        #test that repr for a small bitmap is equal to the original bitmap
+        bm = cls(collection)
+        self.assertEqual(bm, eval(repr(bm)))
+
+    @settings(suppress_health_check=HealthCheck.all(), max_shrinks=0)
+    @given(bitmap_cls, large_list_of_uin32)
+    def test_large_list(self, cls, collection):
+        # test that for a large bitmap the both the start and the end of the bitmap get printed
+
+        bm = cls(collection)
+        s = repr(bm)
+        nondigits = set(s) - set('0123456789\n.')
+        for i in nondigits:
+            s = s.replace(i, ' ')
+
+        small, large = s.split('...')
+        small_ints = [int(i) for i in small.split()]
+        large_ints = [int(i) for i in large.split()]
+
+        for i in small_ints:
+            self.assertIn(i, bm)
+
+        for i in large_ints:
+            self.assertIn(i, bm)
+
+        self.assertEqual(min(small_ints), min(bm))
+        self.assertEqual(max(large_ints), max(bm))
 
 
 class VersionTest(unittest.TestCase):
